@@ -1,83 +1,114 @@
 import express from "express";
-import mysql from "mysql2";
 import fetch from "node-fetch";
+import mongoose from "mongoose";
+import Chat from "./models/Chat.js";
 
 const app = express();
-const PORT = 3000;
-
 app.use(express.json());
 
-// ---------------- MySQL ----------------
-const db = mysql.createConnection({
-  host: "localhost",
-  user: "root",
-  password: "Mithla12",
-  database: "genai_db"
+/* ---------------- MongoDB ---------------- */
+mongoose.connect("mongodb://127.0.0.1:27017/genai");
+
+mongoose.connection.once("open", () => {
+  console.log("✅ MongoDB Connected");
 });
 
-db.connect(err => {
-  if (err) {
-    console.error("❌ MySQL Connection Failed:", err);
-    return;
-  }
-  console.log("✅ MySQL Connected");
-});
+/* ---------- REAL-TIME CONTEXT ---------- */
+function getRealtimeContext() {
+  return {
+    date: new Date().toISOString(),
+    timezone: Intl.DateTimeFormat().resolvedOptions().timeZone
+  };
+}
 
-// ---------------- Generate Mermaid Diagram with MCP ----------------
-app.post("/generate-diagram", async (req, res) => {
-  const { prompt, contextId } = req.body;
+/* ---------- MCP CALL (NO SDK) ---------- */
+async function callMCPTool(method, params) {
+  const res = await fetch("http://localhost:5001/mcp", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      method,
+      params,
+      id: Date.now()
+    })
+  });
 
-  if (!prompt) return res.status(400).json({ error: "Prompt is required" });
+  const data = await res.json();
+  return data?.result?.content?.[0]?.text || "";
+}
+
+
+/* ---------------- CHAT API ---------------- */
+app.post("/ask", async (req, res) => {
+  const { prompt } = req.body;
+  if (!prompt) return res.status(400).json({ error: "Prompt required" });
+
+  const realtimeContext = getRealtimeContext();
+
+  /* -------- DOMAIN-TUNED PROMPT (NEWS) -------- */
+  const systemPrompt = `
+You are a professional NEWS AI assistant.
+
+Knowledge rules:
+- Focus on current world news, technology, politics, economy
+- Answer like ChatGPT
+- Be factual and structured
+- Use Mermaid.js diagrams ONLY if helpful
+- Mermaid output must be valid
+
+Context:
+Date: ${realtimeContext.date}
+Timezone: ${realtimeContext.timezone}
+
+User question:
+${prompt}
+`;
 
   try {
-    // 1️⃣ Call SLM with optional MCP context
     const response = await fetch("http://127.0.0.1:11434/api/generate", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         model: "tinyllama:latest",
-        prompt: `Convert the following into a Mermaid.js diagram:\n${prompt}`,
+        prompt: systemPrompt,
         stream: false,
-        mcp_context: contextId || null
+        options: {
+    temperature: 1.0,     // factual
+    top_p: 0.9,
+    num_ctx: 4096,        // longer reasoning
+    repeat_penalty: 1.1
+  }
       })
     });
 
     const data = await response.json();
-    const diagram = data.response; // Mermaid syntax
-    const newContextId = contextId || data.contextId || null;
+    const answer = data.response;
 
-    // 2️⃣ Save everything in MySQL
-    const sql = "INSERT INTO diagrams (prompt, diagram, context_id) VALUES (?, ?, ?)";
-    db.query(sql, [prompt, diagram, newContextId], (err, result) => {
-      if (err) {
-        console.error("❌ DB Insert Error:", err);
-        return res.status(500).json({ error: "Database insert failed" });
-      }
-
-      // 3️⃣ Return saved data
-      res.json({
-        id: result.insertId,
-        prompt,
-        mermaid: diagram,
-        contextId: newContextId,
-        created_at: new Date()
-      });
+    /* -------- Save NEW DOCUMENT -------- */
+    const chat = await Chat.create({
+      prompt,
+      response: answer,
+      domain: "news",
+      context: realtimeContext
     });
 
-  } catch (error) {
-    res.status(500).json({ error: error.message });
+    res.json({
+      id: chat._id,
+      answer
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 
-// ---------------- Fetch All Diagrams ----------------
-app.get("/diagrams", (req, res) => {
-  db.query("SELECT * FROM diagrams ORDER BY created_at DESC", (err, rows) => {
-    if (err) return res.status(500).json({ error: err.message });
-    res.json(rows);
-  });
+/* ---------------- FETCH HISTORY ---------------- */
+app.get("/history", async (req, res) => {
+  const chats = await Chat.find().sort({ createdAt: -1 });
+  res.json(chats);
 });
 
-// ---------------- START SERVER ----------------
-app.listen(PORT, "127.0.0.1", () => {
-  console.log(`🚀 Server running at http://127.0.0.1:${PORT}`);
-});
+/* ---------------- START SERVER ---------------- */
+app.listen(4000, () =>
+  console.log("🚀 Server running at http://localhost:3000")
+);
