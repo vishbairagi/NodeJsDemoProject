@@ -4,6 +4,7 @@
   "type": "module",
   "main": "index.js",
   "dependencies": {
+    "cheerio": "^1.1.2",
     "cors": "^2.8.5",
     "express": "^5.2.1",
     "mongoose": "^9.1.0",

@@ -1,5 +1,6 @@
 import mongoose from "mongoose";
 
+/* -------- Chat Schema -------- */
 const ChatSchema = new mongoose.Schema({
   prompt: {
     type: String,
@@ -22,4 +23,21 @@ const ChatSchema = new mongoose.Schema({
   }
 });
 
-export default mongoose.model("Chat", ChatSchema);
+/* -------- URL Schema -------- */
+const UrlSchema = new mongoose.Schema(
+  {
+    url: {
+      type: String,
+      required: true
+    },
+    content: {
+      type: String,
+      required: true
+    }
+  },
+  { timestamps: true }
+);
+
+/* -------- Models -------- */
+export const Chat = mongoose.model("Chat", ChatSchema);
+export const UrlContent = mongoose.model("UrlContent", UrlSchema);

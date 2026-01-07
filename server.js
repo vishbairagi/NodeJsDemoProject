@@ -1,19 +1,23 @@
 import express from "express";
 import fetch from "node-fetch";
 import mongoose from "mongoose";
-import Chat from "./models/Chat.js";
+import * as cheerio from "cheerio";
+import { Chat, UrlContent } from "./models/Chat.js";
 
+/* ================= APP ================= */
 const app = express();
 app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 
-/* ---------------- MongoDB ---------------- */
+
+/* ================= MONGODB ================= */
 mongoose.connect("mongodb://127.0.0.1:27017/genai");
 
 mongoose.connection.once("open", () => {
   console.log("✅ MongoDB Connected");
 });
 
-/* ---------- REAL-TIME CONTEXT ---------- */
+/* ================= REAL-TIME CONTEXT ================= */
 function getRealtimeContext() {
   return {
     date: new Date().toISOString(),
@@ -21,94 +25,114 @@ function getRealtimeContext() {
   };
 }
 
-/* ---------- MCP CALL (NO SDK) ---------- */
-async function callMCPTool(method, params) {
-  const res = await fetch("http://localhost:5001/mcp", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      jsonrpc: "2.0",
-      method,
-      params,
-      id: Date.now()
-    })
-  });
+/* ================= WEBSITE FETCH ================= */
+async function fetchWebsiteText(url) {
+  const res = await fetch(url);
+  const html = await res.text();
 
-  const data = await res.json();
-  return data?.result?.content?.[0]?.text || "";
+  const $ = cheerio.load(html);
+  $("script, style, nav, footer, header, noscript").remove();
+
+  return $("body").text().replace(/\s+/g, " ").trim();
 }
 
-
-/* ---------------- CHAT API ---------------- */
-app.post("/ask", async (req, res) => {
-  const { prompt } = req.body;
-  if (!prompt) return res.status(400).json({ error: "Prompt required" });
-
-  const realtimeContext = getRealtimeContext();
-
-  /* -------- DOMAIN-TUNED PROMPT (NEWS) -------- */
-  const systemPrompt = `
-You are a professional NEWS AI assistant.
-
-Knowledge rules:
-- Focus on current world news, technology, politics, economy
-- Answer like ChatGPT
-- Be factual and structured
-- Use Mermaid.js diagrams ONLY if helpful
-- Mermaid output must be valid
-
-Context:
-Date: ${realtimeContext.date}
-Timezone: ${realtimeContext.timezone}
-
-User question:
-${prompt}
-`;
+/* ================= ADD URL ================= */
+app.post("/add-url", async (req, res) => {
+  const { url } = req.body;
+  if (!url) return res.status(400).json({ error: "URL required" });
 
   try {
-    const response = await fetch("http://127.0.0.1:11434/api/generate", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model: "tinyllama:latest",
-        prompt: systemPrompt,
-        stream: false,
-        options: {
-    temperature: 1.0,     // factual
-    top_p: 0.9,
-    num_ctx: 4096,        // longer reasoning
-    repeat_penalty: 1.1
-  }
-      })
-    });
+    const text = await fetchWebsiteText(url);
 
-    const data = await response.json();
-    const answer = data.response;
-
-    /* -------- Save NEW DOCUMENT -------- */
-    const chat = await Chat.create({
-      prompt,
-      response: answer,
-      domain: "news",
-      context: realtimeContext
+    const doc = await UrlContent.create({
+      url,
+      content: text.slice(0, 12000) // keep context small
     });
 
     res.json({
-      id: chat._id,
-      answer
+      message: "✅ URL content stored",
+      urlId: doc._id
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-/* ---------------- FETCH HISTORY ---------------- */
+/* ================= ASK FROM URL ================= */
+app.post("/ask-from-url", async (req, res) => {
+  const { urlId, question } = req.body;
+
+  if (!urlId || !question) {
+    return res.status(400).json({ error: "urlId & question required" });
+  }
+
+  const doc = await UrlContent.findById(urlId);
+  if (!doc) return res.status(404).json({ error: "URL not found" });
+
+  const realtimeContext = getRealtimeContext();
+
+  const systemPrompt = `
+You are an AI assistant.
+Answer ONLY using the website content below.
+If the answer is not present, say:
+"Not available in the provided website."
+
+Website URL:
+${doc.url}
+
+Website Content:
+${doc.content}
+
+Date: ${realtimeContext.date}
+Timezone: ${realtimeContext.timezone}
+`;
+
+  try {
+    const response = await fetch(
+      "http://127.0.0.1:11434/v1/chat/completions",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: "tinyllama",
+          messages: [
+            { role: "system", content: systemPrompt },
+            { role: "user", content: question }
+          ],
+          stream: false,
+          options: {
+            temperature: 0.3,
+            num_ctx: 4096
+          }
+        })
+      }
+    );
+
+    const data = await response.json();
+    const answer = data.choices[0].message.content;
+
+    await Chat.create({
+      prompt: question,
+      response: answer,
+      domain: "url-based",
+      context: {
+        url: doc.url
+      }
+    });
+
+    res.json({ answer });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/* ================= FETCH CHAT HISTORY ================= */
 app.get("/history", async (req, res) => {
   const chats = await Chat.find().sort({ createdAt: -1 });
   res.json(chats);
 });
 
-/* ---------------- START SERVER ---------------- */
-app.listen(4000, () =>
-  console.log("🚀 Server running at http://localhost:3000")
-);
+/* ================= START SERVER ================= */
+app.listen(4000, () => {
+  console.log("🚀 Server running at http://localhost:4000");
+});
