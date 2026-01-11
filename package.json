@@ -4,11 +4,18 @@
   "type": "module",
   "main": "index.js",
   "dependencies": {
+    "@chroma-core/default-embed": "^0.1.9",
     "cheerio": "^1.1.2",
+    "chroma": "^0.0.1",
+    "chromadb": "^3.2.0",
     "cors": "^2.8.5",
     "express": "^5.2.1",
     "mongoose": "^9.1.0",
     "mysql2": "^3.16.0",
-    "node-fetch": "^3.3.2"
+    "node-fetch": "^3.3.2",
+    "tavily": "^1.0.2"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.11"
   }
 }
