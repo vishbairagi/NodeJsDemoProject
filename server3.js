@@ -2,14 +2,13 @@ import express from "express";
 import fetch from "node-fetch";
 import * as cheerio from "cheerio";
 import mongoose from "mongoose";
-import dotenv from "dotenv";
-dotenv.config();
+import crypto from "crypto";
 
 const app = express();
 app.use(express.json());
 
 /* ================= MONGODB ================= */
-mongoose.connect(process.env.MONGO_URI);
+mongoose.connect("mongodb://127.0.0.1:27017/genai");
 
 mongoose.connection.once("open", () => {
   console.log("✅ MongoDB Connected");
@@ -27,8 +26,10 @@ const UrlChunkSchema = new mongoose.Schema(
 
 const ChatSchema = new mongoose.Schema(
   {
+    sessionId: String,          // 🔹 session memory
     prompt: String,
     response: String,
+    followUps: [String],        // 🔹 suggested questions
     domain: String,
     sources: [String]
   },
@@ -104,7 +105,7 @@ async function extractWebsiteContent(url) {
     console.log("📄 Extracted length:", text.length);
 
     return text.length > 300 ? text : null;
-  } catch (err) {
+  } catch {
     console.error("❌ Fetch failed:", url);
     return null;
   }
@@ -123,7 +124,7 @@ function chunkText(text, size = 500, overlap = 100) {
 
 /* ================= EMBEDDINGS ================= */
 async function getEmbedding(text) {
-  const res = await fetch("http://ollama:11434/v1/embeddings", {
+  const res = await fetch("http://127.0.0.1:11434/v1/embeddings", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -148,7 +149,7 @@ function cosineSimilarity(a, b) {
 async function askTinyLlama(prompt) {
   console.log("🤖 Asking TinyLlama");
 
-  const res = await fetch("http://ollama:11434/v1/chat/completions", {
+  const res = await fetch("http://127.0.0.1:11434/v1/chat/completions", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -162,10 +163,46 @@ async function askTinyLlama(prompt) {
   return data.choices[0].message.content;
 }
 
+/* ================= FOLLOW-UP GENERATION ================= */
+async function generateFollowUps(question, answer) {
+  console.log("🔁 Generating follow-up questions");
+
+  const prompt = `
+Suggest 4 deep research follow-up questions.
+Return ONLY a JSON array of strings.
+
+Question: ${question}
+Answer: ${answer}
+`;
+
+  const res = await fetch("http://127.0.0.1:11434/v1/chat/completions", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model: "tinyllama",
+      messages: [{ role: "user", content: prompt }],
+      stream: false
+    })
+  });
+
+  const data = await res.json();
+
+  console.log("🧪 Raw follow-up output:", data.choices[0].message.content);
+
+  try {
+    return JSON.parse(data.choices[0].message.content);
+  } catch {
+    console.log("⚠️ Follow-up JSON parse failed");
+    return [];
+  }
+}
+
 /* ================= ASK API ================= */
 app.post("/ask", async (req, res) => {
-  const { question } = req.body;
+  const { question, sessionId } = req.body;
   if (!question) return res.status(400).json({ error: "Question required" });
+
+  const activeSession = sessionId || crypto.randomUUID();
 
   console.log("❓ Question received:", question);
 
@@ -188,25 +225,16 @@ app.post("/ask", async (req, res) => {
       if (!embedding) continue;
 
       const score = cosineSimilarity(questionEmbedding, embedding);
-
       if (score > 0.25) {
         console.log("✅ Relevant chunk score:", score.toFixed(3));
 
         scoredChunks.push({ text: chunk, score, source: url });
 
-        // ✅ Save chunk in MongoDB
-        await UrlChunk.create({
-          url,
-          content: chunk,
-          embedding
-        });
-
+        await UrlChunk.create({ url, content: chunk, embedding });
         console.log("💾 Chunk saved to MongoDB");
       }
     }
   }
-
-  console.log("📊 Total scored chunks:", scoredChunks.length);
 
   if (!scoredChunks.length) {
     return res.json({ answer: "Information not found." });
@@ -216,42 +244,78 @@ app.post("/ask", async (req, res) => {
   const topChunks = scoredChunks.slice(0, 5);
 
   const prompt = `
-Use ONLY the context below. Do NOT guess.
+Use ONLY the context below.
 
-Context:
 ${topChunks.map((c, i) => `[${i + 1}] ${c.text}`).join("\n\n")}
 
-Question:
-${question}
-
+Question: ${question}
 Answer:
 `;
 
   const answer = await askTinyLlama(prompt);
   const sources = [...new Set(topChunks.map(c => c.source))];
+  const followUps = await generateFollowUps(question, answer);
 
-  // ✅ Save chat history
   await Chat.create({
+    sessionId: activeSession,
     prompt: question,
     response: answer,
+    followUps,
     domain: "rag-url",
     sources
   });
 
   console.log("💬 Chat saved");
 
-  res.json({ answer, sources });
+  res.json({ sessionId: activeSession, answer, sources, followUps });
+});
+
+/* ================= DEEP RESEARCH API ================= */
+app.post("/deep-research", async (req, res) => {
+  const { sessionId, followUpQuestion } = req.body;
+
+  console.log("🔬 Deep research:", followUpQuestion);
+
+  const history = await Chat.find({ sessionId }).sort({ createdAt: 1 });
+
+  const context = history
+    .map(h => `Q: ${h.prompt}\nA: ${h.response}`)
+    .join("\n\n");
+
+  const prompt = `
+You are doing deep research.
+
+Context:
+${context}
+
+New Question:
+${followUpQuestion}
+
+Answer:
+`;
+
+  const answer = await askTinyLlama(prompt);
+  const followUps = await generateFollowUps(followUpQuestion, answer);
+
+  await Chat.create({
+    sessionId,
+    prompt: followUpQuestion,
+    response: answer,
+    followUps,
+    domain: "rag-deep"
+  });
+
+  res.json({ answer, followUps });
 });
 
 /* ================= HISTORY API ================= */
 app.get("/history", async (req, res) => {
   console.log("📜 Fetching chat history");
-
   const chats = await Chat.find().sort({ createdAt: -1 });
   res.json(chats);
 });
 
 /* ================= SERVER ================= */
-app.listen(4000, () => {
+app.listen(5000, () => {
   console.log("🚀 Server running on http://localhost:4000");
 });
