@@ -168,8 +168,13 @@ async function generateFollowUps(question, answer) {
   console.log("🔁 Generating follow-up questions");
 
   const prompt = `
-Suggest 4 deep research follow-up questions.
-Return ONLY a JSON array of strings.
+Generate 4 follow-up research questions.
+
+RULES:
+- Each question must be on a new line
+- Do NOT number them
+- Do NOT explain anything
+- Do NOT use markdown
 
 Question: ${question}
 Answer: ${answer}
@@ -186,16 +191,33 @@ Answer: ${answer}
   });
 
   const data = await res.json();
+  const raw = data.choices[0].message.content.trim();
 
-  console.log("🧪 Raw follow-up output:", data.choices[0].message.content);
+  console.log("🧪 Raw follow-up output:", raw);
 
-  try {
-    return JSON.parse(data.choices[0].message.content);
-  } catch {
-    console.log("⚠️ Follow-up JSON parse failed");
-    return [];
+  // ✅ 1️⃣ Try JSON first (future-proof)
+  const jsonMatch = raw.match(/\[[\s\S]*\]/);
+  if (jsonMatch) {
+    try {
+      return JSON.parse(jsonMatch[0]);
+    } catch {}
   }
+
+  // ✅ 2️⃣ Fallback: line-based extraction (TinyLlama-safe)
+  const lines = raw
+    .split("\n")
+    .map(l => l.replace(/^[-•*\d.]+\s*/, "").trim())
+    .filter(l => l.length > 10);
+
+  if (lines.length >= 2) {
+    return lines.slice(0, 4);
+  }
+
+  console.log("⚠️ Follow-up generation failed completely");
+  return [];
 }
+
+
 
 /* ================= ASK API ================= */
 app.post("/ask", async (req, res) => {

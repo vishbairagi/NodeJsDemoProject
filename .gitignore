@@ -1,5 +1,16 @@
+# Node
 node_modules/
-.venv/
+
+# Environment variables (never commit real secrets)
 .env
-Dockerfile
-docker-compose.yml
+
+# Python (you have .venv)
+.venv/
+
+# Logs
+logs/
+*.log
+
+# OS files
+.DS_Store
+Thumbs.db
