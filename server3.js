@@ -7,6 +7,10 @@ import crypto from "crypto";
 const app = express();
 app.use(express.json());
 
+/* ================= MODELS ================= */
+const CHAT_MODEL = "tinyllama";
+const EMBED_MODEL = "nomic-embed-text";
+
 /* ================= MONGODB ================= */
 mongoose.connect("mongodb://127.0.0.1:27017/genai");
 
@@ -26,10 +30,10 @@ const UrlChunkSchema = new mongoose.Schema(
 
 const ChatSchema = new mongoose.Schema(
   {
-    sessionId: String,          // 🔹 session memory
+    sessionId: String,
     prompt: String,
     response: String,
-    followUps: [String],        // 🔹 suggested questions
+    followUps: [String],
     domain: String,
     sources: [String]
   },
@@ -39,74 +43,79 @@ const ChatSchema = new mongoose.Schema(
 const UrlChunk = mongoose.model("UrlChunk", UrlChunkSchema);
 const Chat = mongoose.model("Chat", ChatSchema);
 
+/* ================= HELPERS ================= */
+function isMathQuestion(q) {
+  return /[\+\-\*\/\^]/.test(q);
+}
+
 /* ================= DUCKDUCKGO SEARCH ================= */
 async function duckSearch(query) {
-  console.log("🔍 DuckDuckGo search:", query);
+  try {
+    console.log("🔍 DuckDuckGo search:", query);
 
-  const url = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
-  const res = await fetch(url, {
-    headers: { "User-Agent": "Mozilla/5.0" }
-  });
+    const url = `https://duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
+    const res = await fetch(url, {
+      headers: { "User-Agent": "Mozilla/5.0" }
+    });
 
-  const html = await res.text();
-  const $ = cheerio.load(html);
-  const results = [];
+    const html = await res.text();
+    const $ = cheerio.load(html);
+    const results = [];
 
-  $(".result").each((i, el) => {
-    if (i >= 7) return;
+    $(".result").each((i, el) => {
+      if (i >= 5) return;
 
-    const title = $(el).find(".result__title").text().trim();
-    const snippet = $(el).find(".result__snippet").text().trim();
-    const link = $(el).find("a").attr("href");
+      const title = $(el).find(".result__title").text().trim();
+      const snippet = $(el).find(".result__snippet").text().trim();
+      const link = $(el).find("a").attr("href");
 
-    if (title && snippet && link) {
-      results.push({ title, snippet, link });
-    }
-  });
+      if (title && snippet && link) {
+        results.push({ title, snippet, link });
+      }
+    });
 
-  console.log("🔍 Search results found:", results.length);
-  return results;
+    return results;
+  } catch (err) {
+    console.error("❌ Search failed:", err.message);
+    return [];
+  }
 }
 
 function normalizeDuckLink(link) {
   if (!link) return null;
-
   if (link.startsWith("//")) link = "https:" + link;
 
   if (link.includes("duckduckgo.com/l/?uddg=")) {
     const urlParam = new URL(link).searchParams.get("uddg");
     if (urlParam) return decodeURIComponent(urlParam);
   }
-
   return link;
 }
 
 /* ================= WEBSITE EXTRACTION ================= */
 async function extractWebsiteContent(url) {
   try {
-    console.log("🌐 Fetching website:", url);
-
+    console.log("🌐 Fetching:", url);
     const res = await fetch(url, {
-      headers: { "User-Agent": "Mozilla/5.0" },
-      redirect: "follow"
+      headers: { "User-Agent": "Mozilla/5.0" }
     });
 
-    if (!res.ok) {
-      console.log("❌ Failed to fetch:", url);
-      return null;
-    }
+    if (!res.ok) return null;
 
     const html = await res.text();
     const $ = cheerio.load(html);
 
     $("script, style, nav, header, footer, aside, noscript").remove();
 
-    const text = $("body").text().replace(/\s+/g, " ").trim();
-    console.log("📄 Extracted length:", text.length);
+    const text = $("p")
+      .map((i, el) => $(el).text())
+      .get()
+      .join(" ")
+      .replace(/\s+/g, " ")
+      .trim();
 
     return text.length > 300 ? text : null;
   } catch {
-    console.error("❌ Fetch failed:", url);
     return null;
   }
 }
@@ -118,7 +127,6 @@ function chunkText(text, size = 500, overlap = 100) {
     const chunk = text.slice(i, i + size);
     if (chunk.length > 200) chunks.push(chunk);
   }
-  console.log("✂️ Total chunks:", chunks.length);
   return chunks;
 }
 
@@ -128,7 +136,7 @@ async function getEmbedding(text) {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      model: "nomic-embed-text",
+      model: EMBED_MODEL,
       input: text
     })
   });
@@ -147,15 +155,12 @@ function cosineSimilarity(a, b) {
 
 /* ================= LLM ================= */
 async function askTinyLlama(prompt) {
-  console.log("🤖 Asking TinyLlama");
-
   const res = await fetch("http://127.0.0.1:11434/v1/chat/completions", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      model: "tinyllama",
-      messages: [{ role: "user", content: prompt }],
-      stream: false
+      model: CHAT_MODEL,
+      messages: [{ role: "user", content: prompt }]
     })
   });
 
@@ -163,61 +168,37 @@ async function askTinyLlama(prompt) {
   return data.choices[0].message.content;
 }
 
-/* ================= FOLLOW-UP GENERATION ================= */
+/* ================= FOLLOW UPS ================= */
 async function generateFollowUps(question, answer) {
-  console.log("🔁 Generating follow-up questions");
-
   const prompt = `
-Generate 4 follow-up research questions.
+Generate exactly 4 relevant follow-up questions.
+One per line.
+No numbering.
+Do not repeat the original question.
 
-RULES:
-- Each question must be on a new line
-- Do NOT number them
-- Do NOT explain anything
-- Do NOT use markdown
+Question:
+${question}
 
-Question: ${question}
-Answer: ${answer}
+Answer:
+${answer}
 `;
 
   const res = await fetch("http://127.0.0.1:11434/v1/chat/completions", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      model: "tinyllama",
-      messages: [{ role: "user", content: prompt }],
-      stream: false
+      model: CHAT_MODEL,
+      messages: [{ role: "user", content: prompt }]
     })
   });
 
   const data = await res.json();
-  const raw = data.choices[0].message.content.trim();
-
-  console.log("🧪 Raw follow-up output:", raw);
-
-  // ✅ 1️⃣ Try JSON first (future-proof)
-  const jsonMatch = raw.match(/\[[\s\S]*\]/);
-  if (jsonMatch) {
-    try {
-      return JSON.parse(jsonMatch[0]);
-    } catch {}
-  }
-
-  // ✅ 2️⃣ Fallback: line-based extraction (TinyLlama-safe)
-  const lines = raw
+  return data.choices[0].message.content
     .split("\n")
-    .map(l => l.replace(/^[-•*\d.]+\s*/, "").trim())
-    .filter(l => l.length > 10);
-
-  if (lines.length >= 2) {
-    return lines.slice(0, 4);
-  }
-
-  console.log("⚠️ Follow-up generation failed completely");
-  return [];
+    .map(q => q.trim())
+    .filter(q => q.endsWith("?"))
+    .slice(0, 4);
 }
-
-
 
 /* ================= ASK API ================= */
 app.post("/ask", async (req, res) => {
@@ -225,22 +206,39 @@ app.post("/ask", async (req, res) => {
   if (!question) return res.status(400).json({ error: "Question required" });
 
   const activeSession = sessionId || crypto.randomUUID();
+  console.log("❓ Question:", question);
 
-  console.log("❓ Question received:", question);
+  /* ===== MATH ===== */
+  if (isMathQuestion(question)) {
+    const answer = await askTinyLlama(
+      `Solve step by step:\n${question}`
+    );
 
+    await Chat.create({
+      sessionId: activeSession,
+      prompt: question,
+      response: answer,
+      followUps: [],
+      domain: "math-direct",
+      sources: []
+    });
+
+    return res.json({ sessionId: activeSession, answer });
+  }
+
+  /* ===== RAG ===== */
   const searchResults = await duckSearch(question);
   const questionEmbedding = await getEmbedding(question);
-
   let scoredChunks = [];
 
   for (const r of searchResults) {
     const url = normalizeDuckLink(r.link);
-    console.log("🌐 Normalized URL:", url);
+    if (!url) continue;
 
     const text = await extractWebsiteContent(url);
     if (!text) continue;
 
-    const chunks = chunkText(text).slice(0, 4);
+    const chunks = chunkText(text).slice(0, 2);
 
     for (const chunk of chunks) {
       const embedding = await getEmbedding(chunk);
@@ -248,35 +246,40 @@ app.post("/ask", async (req, res) => {
 
       const score = cosineSimilarity(questionEmbedding, embedding);
       if (score > 0.25) {
-        console.log("✅ Relevant chunk score:", score.toFixed(3));
-
         scoredChunks.push({ text: chunk, score, source: url });
-
         await UrlChunk.create({ url, content: chunk, embedding });
-        console.log("💾 Chunk saved to MongoDB");
       }
     }
   }
 
   if (!scoredChunks.length) {
-    return res.json({ answer: "Information not found." });
+    return res.json({ answer: "Information not found.", followUps: [] });
   }
 
   scoredChunks.sort((a, b) => b.score - a.score);
-  const topChunks = scoredChunks.slice(0, 5);
+  const topChunks = scoredChunks.slice(0, 1);
 
   const prompt = `
-Use ONLY the context below.
+You are a factual assistant.
 
+Rules:
+- Use ONLY the context.
+- Do NOT add external knowledge.
+- If missing, say "Not mentioned in the sources".
+- Be concise.
+
+Context:
 ${topChunks.map((c, i) => `[${i + 1}] ${c.text}`).join("\n\n")}
 
-Question: ${question}
+Question:
+${question}
+
 Answer:
 `;
 
   const answer = await askTinyLlama(prompt);
-  const sources = [...new Set(topChunks.map(c => c.source))];
   const followUps = await generateFollowUps(question, answer);
+  const sources = [...new Set(topChunks.map(c => c.source))];
 
   await Chat.create({
     sessionId: activeSession,
@@ -287,57 +290,16 @@ Answer:
     sources
   });
 
-  console.log("💬 Chat saved");
-
   res.json({ sessionId: activeSession, answer, sources, followUps });
 });
 
-/* ================= DEEP RESEARCH API ================= */
-app.post("/deep-research", async (req, res) => {
-  const { sessionId, followUpQuestion } = req.body;
-
-  console.log("🔬 Deep research:", followUpQuestion);
-
-  const history = await Chat.find({ sessionId }).sort({ createdAt: 1 });
-
-  const context = history
-    .map(h => `Q: ${h.prompt}\nA: ${h.response}`)
-    .join("\n\n");
-
-  const prompt = `
-You are doing deep research.
-
-Context:
-${context}
-
-New Question:
-${followUpQuestion}
-
-Answer:
-`;
-
-  const answer = await askTinyLlama(prompt);
-  const followUps = await generateFollowUps(followUpQuestion, answer);
-
-  await Chat.create({
-    sessionId,
-    prompt: followUpQuestion,
-    response: answer,
-    followUps,
-    domain: "rag-deep"
-  });
-
-  res.json({ answer, followUps });
-});
-
-/* ================= HISTORY API ================= */
+/* ================= HISTORY ================= */
 app.get("/history", async (req, res) => {
-  console.log("📜 Fetching chat history");
   const chats = await Chat.find().sort({ createdAt: -1 });
   res.json(chats);
 });
 
 /* ================= SERVER ================= */
 app.listen(5000, () => {
-  console.log("🚀 Server running on http://localhost:4000");
+  console.log("🚀 Server running on http://localhost:5000");
 });
