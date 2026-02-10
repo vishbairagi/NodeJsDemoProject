@@ -2,6 +2,7 @@ const dotenv = require("dotenv");
 const path = require("path");
 const express = require("express");
 const cors = require("cors");
+const searchRoutes = require("./routes/search.js");
 
 // Load .env explicitly from project root
 dotenv.config({ path: path.resolve(__dirname, "../.env") });
@@ -20,6 +21,8 @@ console.log("HF_API_KEY:", process.env.HF_API_KEY);
 // ROUTES
 const askRoutes = require("./routes/ask.routes");
 app.use("/", askRoutes);
+app.use("/api", searchRoutes);
+
 
 // HEALTH CHECK
 app.get("/", (req, res) => {
