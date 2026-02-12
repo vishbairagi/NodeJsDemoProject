@@ -1,4 +1,5 @@
 // ───────── Load environment variables ─────────
+require("dotenv").config({ path: __dirname + "/../../.env" });
 const dotenv = require("dotenv");
 dotenv.config(); // MUST be first, before any access to process.env
 
@@ -6,8 +7,8 @@ const axios = require("axios");
 
 const generateAnswer = async (question, context) => {
   // Debug logs to verify env is loaded
-  console.log("OLLAMA_URL:", process.env.OLLAMA_URL);
-  console.log("MODEL:", process.env.MODEL);
+  console.log("OLLAMA_URL4:", process.env.OLLAMA_URL);
+  console.log("MODEL4:", process.env.MODEL);
 
   if (!process.env.OLLAMA_URL) {
     throw new Error("OLLAMA_URL is not set");

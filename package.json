@@ -4,6 +4,7 @@
   "description": "",
   "main": "index.js",
   "dependencies": {
+    "@qdrant/js-client-rest": "^1.16.2",
     "accepts": "^2.0.0",
     "asynckit": "^0.4.0",
     "aws-ssl-profiles": "^1.1.2",
@@ -124,6 +125,7 @@
     "type-is": "^2.0.1",
     "undici": "^7.21.0",
     "unpipe": "^1.0.0",
+    "uuid": "^13.0.0",
     "vary": "^1.1.2",
     "web-streams-polyfill": "^3.3.3",
     "webidl-conversions": "^7.0.0",

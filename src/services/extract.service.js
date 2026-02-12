@@ -1,24 +1,41 @@
 const axios = require("axios");
 const cheerio = require("cheerio");
 
-const extractContent = async (urls) => {
-  const contents = [];
+async function extractBody(url) {
+  try {
+    console.log("Extracting:", url);
 
-  for (const url of urls) {
-    try {
-      const { data } = await axios.get(url, { timeout: 5000 });
-      const $ = cheerio.load(data);
+    const { data } = await axios.get(url, {
+      headers: {
+        "User-Agent": "Mozilla/5.0",
+      },
+      timeout: 10000,
+    });
 
-      $("script, style, nav, footer, header").remove();
-      const text = $("body").text().replace(/\s+/g, " ").trim();
+    const $ = cheerio.load(data);
 
-      contents.push(text.slice(0, 3000));
-    } catch (err) {
-      console.warn("⚠️ Failed to extract:", url);
-    }
+    // Remove unwanted tags
+    $("script").remove();
+    $("style").remove();
+    $("noscript").remove();
+    $("header").remove();
+    $("footer").remove();
+    $("nav").remove();
+
+    // Get body text
+    const text = $("body").text();
+
+    // Clean extra spaces
+    const cleanText = text
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 4000); // limit size
+
+    return cleanText;
+  } catch (error) {
+    console.error("❌ Extract error:", error.message);
+    return "";
   }
+}
 
-  return contents.join("\n\n");
-};
-
-module.exports = extractContent;
+module.exports = { extractBody };

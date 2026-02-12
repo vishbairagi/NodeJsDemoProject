@@ -1,45 +1,49 @@
 const axios = require("axios");
+const cheerio = require("cheerio");
 
-const webSearch = async (query) => {
+async function searchWeb(query) {
   try {
-    const url = "https://api.duckduckgo.com/";
+    console.log("🌐 Searching (HTML) DuckDuckGo...");
 
-    const { data } = await axios.get(url, {
-      params: {
-        q: query,
-        format: "json",
-        no_redirect: 1,
-        no_html: 1,
-        skip_disambig: 1
-      },
-      headers: {
-        "User-Agent": "Mozilla/5.0"
-      },
-      timeout: 10000
+    const searchUrl = "https://html.duckduckgo.com/html/";
+
+    const { data } = await axios.post(
+      searchUrl,
+      new URLSearchParams({ q: query }).toString(),
+      {
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded",
+          "User-Agent": "Mozilla/5.0",
+        },
+        timeout: 15000,
+      }
+    );
+
+    const $ = cheerio.load(data);
+    const urls = new Set();
+
+    $(".result__a").each((_, element) => {
+      const link = $(element).attr("href");
+
+      if (
+        link &&
+        link.startsWith("http") &&
+        !link.includes("duckduckgo.com") &&
+        !link.includes("youtube.com")
+      ) {
+        urls.add(link);
+      }
     });
 
-    const urls = [];
+    const results = Array.from(urls).slice(0, 5);
 
-    // Abstract URL
-    if (data.AbstractURL) {
-      urls.push(data.AbstractURL);
-    }
+    console.log("🔎 Top URLs:", results);
 
-    // Related topics
-    if (Array.isArray(data.RelatedTopics)) {
-      data.RelatedTopics.forEach(item => {
-        if (item.FirstURL) {
-          urls.push(item.FirstURL);
-        }
-      });
-    }
-
-    return urls.slice(0, 5);
-
-  } catch (err) {
-    console.error("🔎 SEARCH ERROR:", err.message);
+    return results;
+  } catch (error) {
+    console.error("❌ DuckDuckGo HTML Search Error:", error.message);
     return [];
   }
-};
+}
 
-module.exports = webSearch;
+module.exports = searchWeb;
