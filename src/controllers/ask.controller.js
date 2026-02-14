@@ -58,7 +58,7 @@ async function askQuestion(req, res) {
       console.log("🎯 Top Similarity Score:", topScore);
 
       // 🔥 LOWERED THRESHOLD
-      if (topScore > 0.45) {
+      if (topScore > 0.60) {
         console.log("✅ Answer found in Vector DB");
 
         const context = results
