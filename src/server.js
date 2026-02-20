@@ -2,6 +2,8 @@ const dotenv = require("dotenv");
 const path = require("path");
 const express = require("express");
 const cors = require("cors");
+const askRoutes = require("./routes/ask.routes");
+const pdfRoutes = require("./routes/pdf.routes");
 
 // ✅ Load .env ONLY ONCE from project root
 dotenv.config({ path: path.resolve(__dirname, "../.env") });
@@ -21,8 +23,8 @@ const { initCollection } = require("./services/vector.service");
 // ⚠️ Change path if your file location is different
 
 // ROUTES
-const askRoutes = require("./routes/ask.routes");
 app.use("/", askRoutes);
+app.use("/", pdfRoutes);
 
 // HEALTH CHECK
 app.get("/", (req, res) => {

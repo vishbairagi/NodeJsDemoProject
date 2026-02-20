@@ -15,6 +15,24 @@ function chunkText(text, size = 800) {
   return chunks;
 }
 
+/* ======================================================
+   🔹 Utility: Check Keyword Relevance
+====================================================== */
+function isRelevant(question, context) {
+  const questionWords = question
+    .toLowerCase()
+    .split(" ")
+    .filter((w) => w.length > 3); // ignore small words
+
+  const contextLower = context.toLowerCase();
+
+  const matchCount = questionWords.filter((word) =>
+    contextLower.includes(word)
+  ).length;
+
+  return matchCount >= 2; // require at least 2 keyword matches
+}
+
 async function askQuestion(req, res) {
   try {
     const { question } = req.body;
@@ -57,22 +75,36 @@ async function askQuestion(req, res) {
       const topScore = results[0].score || 0;
       console.log("🎯 Top Similarity Score:", topScore);
 
-      // 🔥 LOWERED THRESHOLD
-      if (topScore > 0.60) {
-        console.log("✅ Answer found in Vector DB");
+      const context = results
+        .map((r) => r.payload?.text || "")
+        .join("\n")
+        .slice(0, 4000);
 
-        const context = results
-          .map((r) => r.payload?.text || "")
-          .join("\n")
-          .slice(0, 4000); // limit context size
+      console.log("📝 Context Preview:", context.slice(0, 200));
 
-        const answer = await generateAnswer(question, context);
+      // ✅ STRICT THRESHOLD + KEYWORD VALIDATION
+      if (topScore > 0.70 && isRelevant(question, context)) {
+        console.log("✅ Valid Answer Found in Vector DB");
+
+        const answer = await generateAnswer(
+          question,
+          `
+Answer ONLY using the provided context.
+If the answer is not present in the context, say:
+"I don't know based on the provided information."
+          
+Context:
+${context}
+`
+        );
 
         return res.json({
           source: "vector_db",
           score: topScore,
           answer,
         });
+      } else {
+        console.log("❌ Vector result rejected (low score or irrelevant)");
       }
     }
 
@@ -81,8 +113,8 @@ async function askQuestion(req, res) {
     ====================================================== */
     console.log("🌐 Searching web...");
 
-const enhancedQuery = `${question} programming language`;
-const urls = await searchWeb(enhancedQuery);
+    const enhancedQuery = `${question}`;
+    const urls = await searchWeb(enhancedQuery);
 
     if (!urls || urls.length === 0) {
       return res.json({
@@ -92,37 +124,23 @@ const urls = await searchWeb(enhancedQuery);
     }
 
     let context = "";
-for (const url of urls) {
-  try {
-    const bodyText = await extractBody(url);
 
-    if (!bodyText) continue;
+    for (const url of urls) {
+      try {
+        const bodyText = await extractBody(url);
+        if (!bodyText) continue;
 
-    // ✅ FILTER IRRELEVANT CONTENT
-    const lower = bodyText.toLowerCase();
-
-    if (
-      !lower.includes("programming") &&
-      !lower.includes("software") &&
-      !lower.includes("language")
-    ) {
-      console.log("⛔ Skipped irrelevant page:", url);
-      continue;
+        if (bodyText.length > 800) {
+          context = bodyText.slice(0, 4000);
+          console.log("✅ Context extracted from:", url);
+          break;
+        }
+      } catch (err) {
+        console.log("⚠️ Extraction failed for:", url);
+      }
     }
 
-    if (bodyText.length > 800) {
-      context = bodyText.slice(0, 4000);
-      console.log("✅ Context extracted from:", url);
-      break;
-    }
-
-  } catch (err) {
-    console.log("⚠️ Extraction failed for:", url);
-  }
-}
-
-
-    if (!context || context.length < 100) {
+    if (!context || context.length < 200) {
       return res.json({
         source: "web_search",
         answer: "I don't know.",
@@ -130,12 +148,22 @@ for (const url of urls) {
     }
 
     /* ======================================================
-       5️⃣ Generate Answer using LLM
+       5️⃣ Generate Answer (Strict Grounding)
     ====================================================== */
-    const answer = await generateAnswer(question, context);
+    const answer = await generateAnswer(
+      question,
+      `
+Answer ONLY using the provided context.
+If the answer is not present in the context, say:
+"I don't know based on the provided information."
+      
+Context:
+${context}
+`
+    );
 
     /* ======================================================
-       6️⃣ Store Context in Vector DB (Chunked)
+       6️⃣ Store Context in Vector DB
     ====================================================== */
     try {
       const chunks = chunkText(context);
